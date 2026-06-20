@@ -1,35 +1,53 @@
-# FNB58 Web Monitor (Browser-Edition)
+# FNB58 Web Monitor (Browser Edition)
 
-Statische, server-lose Variante des FNB58 Web Monitors. Kommuniziert direkt
-aus dem Browser per **Web Bluetooth** oder **WebUSB** mit dem FNIRSI FNB58.
+Static, serverless version of the FNB58 monitor. It talks directly to the
+FNIRSI FNB58 from the browser via **Web Bluetooth** or **WebUSB**.
 
-Diese Variante wird über GitHub Pages publiziert (siehe
-`.github/workflows/pages.yml`) und benötigt weder Python noch Docker.
+This version is intended for GitHub Pages deployment through
+`.github/workflows/pages.yml` and does not require Python or Docker in
+production.
 
-## Lokale Vorschau
+## Local Preview
 
 ```bash
-# Einfacher statischer Server (Python 3)
 python3 -m http.server -d web 8000
-# Anschließend http://localhost:8000 öffnen.
 ```
 
-> Web Bluetooth und WebUSB funktionieren nur in einem *secure context*,
-> also über HTTPS oder `localhost`.
+Then open `http://localhost:8000`.
 
-## Browser-Unterstützung
+> Web Bluetooth and WebUSB only work in a secure context, which means
+> `https://...` or `http://localhost`.
+
+## Browser Support
 
 | API           | Chrome / Edge / Opera | Firefox | Safari |
 | ------------- | --------------------- | ------- | ------ |
 | Web Bluetooth | ✅                    | ❌      | ❌     |
 | WebUSB        | ✅                    | ❌      | ❌     |
 
-Unter Linux benötigt WebUSB ggf. eine udev-Regel für die Vendor-ID `0x0716`.
-Unter Windows kann WinUSB als Treiber benötigt werden (z. B. via Zadig).
+On Linux, WebUSB may require a udev rule for vendor ID `0x0716`.
+On Windows, a WinUSB driver may be required, for example via Zadig.
 
-## Implementierung
+## BLE Coverage
 
-Die Protokoll-Parser sind direkte Ports der Python-Referenzimplementierung:
+The browser monitor now understands the newer framed BLE notifications used by
+recent FNB58 firmware:
 
-- BLE-Frames → `device/bluetooth_reader.py::_parse_data`
-- USB-HID-Pakete → `device/usb_reader.py::_decode_packet`
+- `0x04` precise voltage/current/power frame
+- `0x05` temperature
+- `0x06` D+ / D-
+- `0x07` fallback voltage/current sample
+- `0x08` energy, capacity, runtime counters
+
+The protocol handling mirrors the Python reference implementation in:
+
+- `device/bluetooth_reader.py`
+- `device/usb_reader.py`
+
+## GitHub Pages
+
+After enabling **Settings -> Pages -> Build and deployment -> Source: GitHub Actions**
+in the repository, pushes to `main` that touch `web/**` or the Pages workflow
+will publish this app at:
+
+`https://<owner>.github.io/FNB58-MacOS/`

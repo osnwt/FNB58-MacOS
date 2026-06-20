@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -12,37 +12,37 @@
   <header>
     <h1>FNB58 Web Monitor</h1>
     <p class="subtitle">
-      Direktverbindung zum FNIRSI FNB58 über
-      <strong>Web Bluetooth</strong> oder <strong>WebUSB</strong> –
-      ohne Server, ohne Docker, ohne Installation.
+      Direct browser connection to the FNIRSI FNB58 over
+      <strong>Web Bluetooth</strong> or <strong>WebUSB</strong> -
+      no server, no Docker, no installation.
     </p>
   </header>
 
   <main>
     <section class="card controls">
       <div class="buttons">
-        <button id="btn-ble"        class="primary">🔵 Bluetooth verbinden</button>
-        <button id="btn-usb"        class="primary">🔌 USB verbinden</button>
-        <button id="btn-disconnect" class="secondary" disabled>Trennen</button>
+        <button id="btn-ble"        class="primary">🔵 Connect Bluetooth</button>
+        <button id="btn-usb"        class="primary">🔌 Connect USB</button>
+        <button id="btn-disconnect" class="secondary" disabled>Disconnect</button>
       </div>
       <div class="state">
-        <span id="mode-label">Nicht verbunden</span>
-        <span id="status" data-kind="info">Bereit</span>
+        <span id="mode-label">Disconnected</span>
+        <span id="status" data-kind="info">Ready</span>
       </div>
       <p id="support-note" class="hidden warn"></p>
     </section>
 
     <section class="card readings">
       <div class="reading">
-        <span class="label">Spannung</span>
+        <span class="label">Voltage</span>
         <span id="value-voltage" class="value">— V</span>
       </div>
       <div class="reading">
-        <span class="label">Strom</span>
+        <span class="label">Current</span>
         <span id="value-current" class="value">— A</span>
       </div>
       <div class="reading">
-        <span class="label">Leistung</span>
+        <span class="label">Power</span>
         <span id="value-power" class="value">— W</span>
       </div>
       <div class="reading">
@@ -50,53 +50,73 @@
         <span id="value-dp" class="value">— V</span>
       </div>
       <div class="reading">
-        <span class="label">D−</span>
+        <span class="label">D-</span>
         <span id="value-dn" class="value">— V</span>
       </div>
       <div class="reading">
-        <span class="label">Temperatur</span>
+        <span class="label">Temperature</span>
         <span id="value-temp" class="value">— °C</span>
+      </div>
+      <div class="reading">
+        <span class="label">Energy</span>
+        <span id="value-energy" class="value">— Wh</span>
+      </div>
+      <div class="reading">
+        <span class="label">Capacity</span>
+        <span id="value-capacity" class="value">— mAh</span>
+      </div>
+      <div class="reading">
+        <span class="label">Protocol</span>
+        <span id="value-protocol" class="value">—</span>
+      </div>
+      <div class="reading">
+        <span class="label">Runtime</span>
+        <span id="value-runtime" class="value">—</span>
+      </div>
+      <div class="reading">
+        <span class="label">Power On</span>
+        <span id="value-poweron" class="value">—</span>
       </div>
     </section>
 
     <section class="card chart-card">
-      <h2>Leistung</h2>
+      <h2>Power</h2>
       <div class="chart-wrap"><canvas id="chart-power"></canvas></div>
     </section>
 
     <section class="card chart-card">
-      <h2>Strom</h2>
+      <h2>Current</h2>
       <div class="chart-wrap"><canvas id="chart-current"></canvas></div>
     </section>
 
     <section class="card chart-card">
-      <h2>Spannung</h2>
+      <h2>Voltage</h2>
       <div class="chart-wrap"><canvas id="chart-voltage"></canvas></div>
     </section>
 
     <section class="card info">
-      <h2>Browser-Anforderungen</h2>
+      <h2>Browser Requirements</h2>
       <ul>
-        <li><strong>Web Bluetooth</strong>: Chrome, Edge, Opera auf Desktop / Android. Auf macOS muss Bluetooth aktiviert sein.</li>
-        <li><strong>WebUSB</strong>: Chrome, Edge, Opera auf Desktop / Android. Unter Linux ggf. udev-Regeln für VID <code>0x0716</code> setzen. Unter Windows wird ggf. WinUSB als Treiber benötigt (z.&nbsp;B. via Zadig).</li>
-        <li>Die Seite muss über <strong>HTTPS</strong> (oder <code>localhost</code>) ausgeliefert werden. GitHub Pages erfüllt diese Anforderung automatisch.</li>
-        <li>Es werden keinerlei Daten an einen Server übertragen – die Kommunikation findet komplett im Browser statt.</li>
+        <li><strong>Web Bluetooth</strong>: Chrome, Edge, or Opera on desktop / Android. On macOS, Bluetooth must be enabled.</li>
+        <li><strong>WebUSB</strong>: Chrome, Edge, or Opera on desktop / Android. On Linux you may need udev rules for VID <code>0x0716</code>. On Windows you may need a WinUSB driver via Zadig.</li>
+        <li>The page must be served over <strong>HTTPS</strong> or <code>localhost</code>. GitHub Pages satisfies this automatically.</li>
+        <li>No data is sent to a server - all communication stays inside your browser.</li>
       </ul>
     </section>
 
     <section class="card log-card">
       <div class="log-header">
-        <h2>🔍 Bluetooth-Debug-Log</h2>
-        <button id="btn-clear-log" class="secondary log-clear-btn">Leeren</button>
+        <h2>🔍 Bluetooth Debug Log</h2>
+        <button id="btn-clear-log" class="secondary log-clear-btn">Clear</button>
       </div>
-      <div id="bt-log" class="log-output" role="log" aria-live="polite" aria-label="Bluetooth-Debug-Log"></div>
+      <div id="bt-log" class="log-output" role="log" aria-live="polite" aria-label="Bluetooth Debug Log"></div>
     </section>
   </main>
 
   <footer>
     <p>
-      Quellcode &amp; Doku:
-      <a href="https://github.com/the78mole/FNB58-MacOS">github.com/the78mole/FNB58-MacOS</a>
+      Source code:
+      <a href="https://github.com/osnwt/FNB58-MacOS">github.com/osnwt/FNB58-MacOS</a>
     </p>
   </footer>
 </body>

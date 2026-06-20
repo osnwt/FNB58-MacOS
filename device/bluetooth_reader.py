@@ -4,6 +4,7 @@ Based on reverse-engineered protocol from parkerlreed's gist
 """
 
 import asyncio
+import binascii
 import struct
 import threading
 from datetime import datetime
@@ -27,6 +28,14 @@ class BluetoothReader:
         bytes([0xaa, 0x81, 0x00, 0xf4]),
         bytes([0xaa, 0x82, 0x00, 0xa7])
     ]
+    PACKET_LENGTHS = {
+        0x03: 14,
+        0x04: 12,
+        0x05: 7,
+        0x06: 6,
+        0x07: 4,
+        0x08: 17,
+    }
     
     def __init__(self, device_address=None, device_name="FNB58"):
         self.device_address = device_address
@@ -41,6 +50,17 @@ class BluetoothReader:
         # Resolved characteristic UUIDs (filled after connection)
         self._write_uuid = None
         self._notify_uuid = None
+        self._rx_buffer = bytearray()
+        self._latest_measurement = {
+            'dp': 0.0,
+            'dn': 0.0,
+            'temperature': 0.0,
+            'energy_wh': 0.0,
+            'capacity_ah': 0.0,
+            'record_seconds': 0,
+            'power_on_seconds': 0,
+        }
+        self._device_metadata = {}
         
     async def scan_devices(self, timeout=10):
         """Scan for FNIRSI devices"""
@@ -164,10 +184,10 @@ class BluetoothReader:
         
         def notification_handler(sender, data):
             """Handle incoming notifications"""
-            reading = self._parse_data(data)
-            if reading:
+            readings = self._parse_data(data)
+            for reading in readings:
                 self.data_buffer.append(reading)
-                
+
                 if self.data_callback:
                     self.data_callback(reading)
         
@@ -219,8 +239,134 @@ class BluetoothReader:
         if self.thread:
             self.thread.join(timeout=2)
     
-    def _parse_data(self, data):
-        """Parse notification data packet"""
+    @staticmethod
+    def _crc8_from_xmodem(data):
+        """Return the low byte of CRC-16/XMODEM, matching the BLE framing."""
+        return binascii.crc_hqx(data, 0) & 0xFF
+
+    def _parse_framed_packets(self, data):
+        """Parse variable-length framed BLE packets used by newer firmware."""
+        self._rx_buffer.extend(data)
+        packets = []
+        index = 0
+
+        while index < len(self._rx_buffer):
+            if self._rx_buffer[index] != 0xAA:
+                index += 1
+                continue
+
+            if index + 2 >= len(self._rx_buffer):
+                break
+
+            packet_type = self._rx_buffer[index + 1]
+            payload_len = self._rx_buffer[index + 2]
+            expected_len = self.PACKET_LENGTHS.get(packet_type)
+
+            if expected_len is None or payload_len != expected_len:
+                index += 1
+                continue
+
+            frame_end = index + 4 + payload_len
+            if frame_end > len(self._rx_buffer):
+                break
+
+            payload_start = index + 3
+            payload_end = payload_start + payload_len
+            payload = bytes(self._rx_buffer[payload_start:payload_end])
+            checksum = self._rx_buffer[payload_end]
+            frame = bytes(self._rx_buffer[index:payload_end])
+
+            if checksum != self._crc8_from_xmodem(frame):
+                index += 1
+                continue
+
+            packets.append((packet_type, payload))
+            index = frame_end
+
+        if index:
+            del self._rx_buffer[:index]
+
+        return packets
+
+    def _build_reading(self, voltage, current, power=None):
+        if power is None:
+            power = voltage * current
+        return {
+            'timestamp': datetime.now().isoformat(),
+            'voltage': round(voltage, 5),
+            'current': round(current, 5),
+            'power': round(power, 5),
+            'dp': round(self._latest_measurement.get('dp', 0.0), 3),
+            'dn': round(self._latest_measurement.get('dn', 0.0), 3),
+            'temperature': round(self._latest_measurement.get('temperature', 0.0), 1),
+            'energy_wh': round(self._latest_measurement.get('energy_wh', 0.0), 5),
+            'capacity_ah': round(self._latest_measurement.get('capacity_ah', 0.0), 5),
+            'record_seconds': self._latest_measurement.get('record_seconds', 0),
+            'power_on_seconds': self._latest_measurement.get('power_on_seconds', 0),
+            'sample': 0
+        }
+
+    def _parse_framed_measurements(self, data):
+        """Convert framed BLE packets into app readings."""
+        had_framed_context = bool(self._rx_buffer) or (len(data) > 0 and data[0] == 0xAA)
+        packets = self._parse_framed_packets(data)
+        if not packets:
+            return [], had_framed_context
+
+        primary_measurement = None
+
+        for packet_type, payload in packets:
+            if packet_type == 0x03:
+                model, fw_raw, serial = struct.unpack_from('<HHL', payload, 0)
+                self._device_metadata.update({
+                    'model': model,
+                    'firmware_version': round(fw_raw / 100, 2),
+                    'serial': serial,
+                    'group_max': payload[12],
+                    'group_current': payload[13],
+                })
+            elif packet_type == 0x04:
+                voltage_raw, current_raw, power_raw = struct.unpack_from('<III', payload, 0)
+                primary_measurement = {
+                    'voltage': voltage_raw / 10000.0,
+                    'current': current_raw / 10000.0,
+                    'power': power_raw / 10000.0,
+                }
+            elif packet_type == 0x05:
+                sign = 1 if payload[4] > 0 else -1
+                self._latest_measurement['temperature'] = (
+                    sign * struct.unpack_from('<H', payload, 5)[0] / 10.0
+                )
+            elif packet_type == 0x06:
+                dp, dn = struct.unpack_from('<HH', payload, 0)
+                self._latest_measurement['dp'] = dp / 1000.0
+                self._latest_measurement['dn'] = dn / 1000.0
+            elif packet_type == 0x07:
+                voltage_raw, current_raw = struct.unpack_from('<HH', payload, 0)
+                primary_measurement = primary_measurement or {
+                    'voltage': voltage_raw / 1000.0,
+                    'current': current_raw / 1000.0,
+                    'power': (voltage_raw / 1000.0) * (current_raw / 1000.0),
+                }
+            elif packet_type == 0x08:
+                self._latest_measurement['energy_wh'] = struct.unpack_from('<L', payload, 1)[0] / 100000.0
+                self._latest_measurement['capacity_ah'] = struct.unpack_from('<L', payload, 5)[0] / 100000.0
+                self._latest_measurement['record_seconds'] = struct.unpack_from('<L', payload, 9)[0]
+                self._latest_measurement['power_on_seconds'] = struct.unpack_from('<L', payload, 13)[0]
+
+        readings = []
+        if primary_measurement:
+            voltage = primary_measurement['voltage']
+            current = primary_measurement['current']
+            power = primary_measurement['power']
+
+            if 0.0 <= voltage <= 150.0:
+                readings.append(self._build_reading(voltage, current, power))
+
+        return readings, True
+
+    def _parse_legacy_data(self, data):
+        """Parse the legacy fixed-offset BLE packet format."""
         # Constants from reverse engineering
         offset = 21
         scale = 10000
@@ -230,7 +376,7 @@ class BluetoothReader:
         max_voltage = 150.0
         
         if len(data) < offset + 12:
-            return None
+            return []
         
         try:
             # Unpack 3 signed 32-bit integers (voltage, current, power)
@@ -238,7 +384,7 @@ class BluetoothReader:
             
             # Filter out invalid readings
             if not (min_voltage <= voltage <= max_voltage):
-                return None
+                return []
             
             reading = {
                 'timestamp': datetime.now().isoformat(),
@@ -251,11 +397,21 @@ class BluetoothReader:
                 'sample': 0
             }
             
-            return reading
+            return [reading]
             
         except Exception as e:
             print(f"Error parsing Bluetooth data: {e}")
-            return None
+            return []
+
+    def _parse_data(self, data):
+        """Parse BLE notifications from either the new framed or legacy format."""
+        framed_readings, had_framed_context = self._parse_framed_measurements(data)
+        if framed_readings:
+            return framed_readings
+        if had_framed_context:
+            return []
+
+        return self._parse_legacy_data(data)
     
     async def _disconnect_async(self):
         """Async disconnect handler"""
@@ -282,5 +438,6 @@ class BluetoothReader:
         return {
             'address': self.device_address,
             'name': self.device_name,
-            'connection_type': 'bluetooth'
+            'connection_type': 'bluetooth',
+            **self._device_metadata,
         }

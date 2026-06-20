@@ -26,6 +26,7 @@ const BLE_INIT_COMMANDS = [
   new Uint8Array([0xaa, 0x81, 0x00, 0xf4]),
   new Uint8Array([0xaa, 0x82, 0x00, 0xa7]),
 ];
+const BLE_PACKET_LENGTHS = { 0x03: 14, 0x04: 12, 0x05: 7, 0x06: 6, 0x07: 4, 0x08: 17 };
 
 // USB
 const USB_VENDOR_ID = 0x0716;
@@ -60,7 +61,7 @@ function setConnected(connected, mode = '') {
   $('btn-disconnect').disabled = !connected;
   $('btn-ble').disabled = connected;
   $('btn-usb').disabled = connected;
-  $('mode-label').textContent = connected ? `Verbunden (${mode})` : 'Nicht verbunden';
+  $('mode-label').textContent = connected ? `Connected (${mode})` : 'Disconnected';
 }
 
 function fmt(value, digits = 3) {
@@ -103,7 +104,7 @@ function appendLog(message, level = 'info') {
   const entry = document.createElement('div');
   entry.className = `log-entry log-${level}`;
 
-  const ts = new Date().toLocaleTimeString('de-DE', { hour12: false });
+  const ts = new Date().toLocaleTimeString('en-GB', { hour12: false });
   entry.innerHTML =
     `<span class="log-ts">${ts}</span>` +
     `<span class="log-badge log-badge-${level}">${level.toUpperCase()}</span>` +
@@ -166,12 +167,33 @@ function makeChart(canvasId, label, color, yLabel) {
 }
 
 function initCharts() {
-  charts.voltage = makeChart('chart-voltage', 'Spannung (V)', '#60a5fa', 'V');
-  charts.current = makeChart('chart-current', 'Strom (A)',    '#f87171', 'A');
-  charts.power   = makeChart('chart-power',   'Leistung (W)', '#34d399', 'W');
+  charts.voltage = makeChart('chart-voltage', 'Voltage (V)', '#60a5fa', 'V');
+  charts.current = makeChart('chart-current', 'Current (A)', '#f87171', 'A');
+  charts.power   = makeChart('chart-power',   'Power (W)',   '#34d399', 'W');
 }
 
 let firstTimestamp = null;
+
+function fmtDuration(totalSeconds) {
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return '—';
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function inferProtocol(dp, dn) {
+  if (!Number.isFinite(dp) || !Number.isFinite(dn)) return '—';
+  if (dp > 0.55 && dp < 0.75 && dn > 0.55 && dn < 0.75) return 'QC 2.0';
+  if (dp > 1.8 && dp < 2.8 && dn > 1.8 && dn < 2.8) return 'QC 3.0';
+  if (dp > 2.6 && dp < 3.0 && dn < 0.7) return 'FCP';
+  if (dp > 1.1 && dp < 1.3 && dn < 0.7) return 'SCP';
+  if (dp > 2.6 && dp < 3.0 && dn > 2.6 && dn < 3.0) return 'VOOC';
+  if (dp > 0.45 && dp < 0.65 && dn > 1.8 && dn < 2.8) return 'PD';
+  if (dp > 2.0 && dp < 3.0 && dn > 0.45 && dn < 0.65) return 'PPS';
+  if (dp < 0.2 && dn < 0.2) return 'DCP';
+  return '—';
+}
 
 function pushReading(reading) {
   const now = performance.now() / 1000;
@@ -196,6 +218,11 @@ function pushReading(reading) {
   $('value-dp').textContent          = fmt(reading.dp, 3) + ' V';
   $('value-dn').textContent          = fmt(reading.dn, 3) + ' V';
   $('value-temp').textContent        = fmt(reading.temperature, 1) + ' °C';
+  $('value-energy').textContent      = fmt(reading.energyWh, 4) + ' Wh';
+  $('value-capacity').textContent    = fmt(reading.capacityAh * 1000, 2) + ' mAh';
+  $('value-protocol').textContent    = reading.protocol || '—';
+  $('value-runtime').textContent     = fmtDuration(reading.recordSeconds);
+  $('value-poweron').textContent     = fmtDuration(reading.powerOnSeconds);
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +234,16 @@ class BleDriver {
     this.device = null;
     this.writeChar = null;
     this.notifyChar = null;
+    this.rxBuffer = new Uint8Array(0);
+    this.latest = {
+      dp: 0,
+      dn: 0,
+      temperature: 0,
+      energyWh: 0,
+      capacityAh: 0,
+      recordSeconds: 0,
+      powerOnSeconds: 0,
+    };
   }
 
   static available() {
@@ -215,11 +252,11 @@ class BleDriver {
 
   async connect(onReading) {
     if (!BleDriver.available()) {
-      throw new Error('Web Bluetooth wird von diesem Browser nicht unterstützt');
+      throw new Error('Web Bluetooth is not supported in this browser');
     }
 
-    appendLog('Scanne nach FNB58 …');
-    setStatus('Scanne nach FNB58 …');
+    appendLog('Scanning for FNB58 ...');
+    setStatus('Scanning for FNB58 ...');
     this.device = await navigator.bluetooth.requestDevice({
       // Multiple filters are OR-combined by the browser.
       // Name-prefix covers most firmware versions; service-UUID filters
@@ -234,18 +271,18 @@ class BleDriver {
     });
 
     this.device.addEventListener('gattserverdisconnected', () => {
-      appendLog('Bluetooth getrennt', 'warn');
-      setStatus('Bluetooth getrennt', 'warn');
+      appendLog('Bluetooth disconnected', 'warn');
+      setStatus('Bluetooth disconnected', 'warn');
       setConnected(false);
     });
 
-    appendLog(`Verbinde zu ${this.device.name || this.device.id} …`);
-    setStatus(`Verbinde zu ${this.device.name || this.device.id} …`);
+    appendLog(`Connecting to ${this.device.name || this.device.id} ...`);
+    setStatus(`Connecting to ${this.device.name || this.device.id} ...`);
     const server = await this.device.gatt.connect();
 
     // Enumerate all primary services and log them for diagnostics.
     const services = await server.getPrimaryServices();
-    appendLog(`${services.length} GATT-Service(s) gefunden`);
+    appendLog(`${services.length} GATT service(s) found`);
 
     // Resolve write and notify characteristics independently across all services.
     // On most FNB58 firmware versions the write char (ffe9) lives in service ffe5
@@ -261,7 +298,7 @@ class BleDriver {
       const props = (c) =>
         Object.entries(c.properties).filter(([, v]) => v).map(([k]) => k).join(', ');
 
-      appendLog(`  Service ${svc.uuid}: ${chars.length} Charakteristik(en)`);
+      appendLog(`  Service ${svc.uuid}: ${chars.length} characteristic(s)`);
       for (const c of chars) {
         appendLog(`    ${c.uuid}  [${props(c)}]`);
         const uuid = c.uuid.toLowerCase();
@@ -271,24 +308,24 @@ class BleDriver {
     }
 
     if (!notifyChar) {
-      const msg = 'Keine Notify-Charakteristik (ffe4) gefunden – Verbindung nicht möglich';
+      const msg = 'Notify characteristic (ffe4) not found - cannot continue';
       appendLog(msg, 'error');
       throw new Error(msg);
     }
-    appendLog(`Notify-Charakteristik gefunden: ${notifyChar.uuid}`, 'ok');
+    appendLog(`Notify characteristic found: ${notifyChar.uuid}`, 'ok');
 
     if (!writeChar) {
-      appendLog('Keine Write-Charakteristik (ffe9) gefunden – Init-Kommandos werden übersprungen', 'warn');
+      appendLog('Write characteristic (ffe9) not found - skipping init commands', 'warn');
     } else {
-      appendLog(`Write-Charakteristik gefunden: ${writeChar.uuid}`, 'ok');
+      appendLog(`Write characteristic found: ${writeChar.uuid}`, 'ok');
     }
 
     notifyChar.addEventListener('characteristicvaluechanged', (evt) => {
-      const reading = this._parse(evt.target.value);
-      if (reading) onReading(reading);
+      const readings = this._parse(evt.target.value);
+      for (const reading of readings) onReading(reading);
     });
     await notifyChar.startNotifications();
-    appendLog('Notifications aktiviert');
+    appendLog('Notifications enabled');
 
     if (writeChar) {
       for (const cmd of BLE_INIT_COMMANDS) {
@@ -296,18 +333,18 @@ class BleDriver {
           await writeChar.writeValue(cmd);
           await new Promise((r) => setTimeout(r, 100));
         } catch (err) {
-          appendLog(`Init-Kommando fehlgeschlagen (nicht kritisch): ${err.message}`, 'warn');
+          appendLog(`Init command failed (non-fatal): ${err.message}`, 'warn');
         }
       }
-      appendLog('Init-Kommandos gesendet');
+      appendLog('Init commands sent');
     }
 
     this.writeChar  = writeChar;
     this.notifyChar = notifyChar;
 
     const label = this.device.name || this.device.id;
-    appendLog(`Bluetooth verbunden: ${label}`, 'ok');
-    setStatus(`Bluetooth verbunden: ${label}`, 'ok');
+    appendLog(`Bluetooth connected: ${label}`, 'ok');
+    setStatus(`Bluetooth connected: ${label}`, 'ok');
     setConnected(true, 'Bluetooth');
   }
 
@@ -319,32 +356,121 @@ class BleDriver {
     this.device = this.writeChar = this.notifyChar = null;
   }
 
-  /**
-   * Parse a notification packet.
-   *
-   * Mirrors device/bluetooth_reader.py::_parse_data:
-   *   offset 21, 3 × signed little-endian int32, scale 1/10000.
-   */
-  _parse(dataView) {
-    const OFFSET = 21;
-    const SCALE = 10000;
-    if (dataView.byteLength < OFFSET + 12) return null;
+  _crc8FromXmodem(bytes) {
+    let crc = 0;
+    for (const b of bytes) {
+      crc ^= (b << 8);
+      for (let i = 0; i < 8; i++) {
+        crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) : (crc << 1);
+        crc &= 0xffff;
+      }
+    }
+    return crc & 0xff;
+  }
 
-    const voltage = dataView.getInt32(OFFSET + 0, true) / SCALE;
-    const current = dataView.getInt32(OFFSET + 4, true) / SCALE;
-    const power   = dataView.getInt32(OFFSET + 8, true) / SCALE;
+  _parsePackets(chunk) {
+    const merged = new Uint8Array(this.rxBuffer.length + chunk.length);
+    merged.set(this.rxBuffer);
+    merged.set(chunk, this.rxBuffer.length);
 
-    if (voltage < 0 || voltage > 150) return null;
+    const packets = [];
+    let index = 0;
+    while (index < merged.length) {
+      if (merged[index] !== 0xaa) {
+        index += 1;
+        continue;
+      }
+      if (index + 2 >= merged.length) break;
 
+      const type = merged[index + 1];
+      const len = merged[index + 2];
+      const expectedLen = BLE_PACKET_LENGTHS[type];
+      if (!expectedLen || len !== expectedLen) {
+        index += 1;
+        continue;
+      }
+
+      const frameEnd = index + 4 + len;
+      if (frameEnd > merged.length) break;
+
+      const payloadStart = index + 3;
+      const payloadEnd = payloadStart + len;
+      const payload = merged.slice(payloadStart, payloadEnd);
+      const checksum = merged[payloadEnd];
+      const frame = merged.slice(index, payloadEnd);
+
+      if (checksum !== this._crc8FromXmodem(frame)) {
+        index += 1;
+        continue;
+      }
+
+      packets.push({ type, payload });
+      index = frameEnd;
+    }
+
+    this.rxBuffer = merged.slice(index);
+    return packets;
+  }
+
+  _buildReading(voltage, current, power = voltage * current) {
     return {
       timestamp: Date.now(),
       voltage,
       current,
       power,
-      dp: 0,
-      dn: 0,
-      temperature: 0,
+      dp: this.latest.dp,
+      dn: this.latest.dn,
+      temperature: this.latest.temperature,
+      energyWh: this.latest.energyWh,
+      capacityAh: this.latest.capacityAh,
+      recordSeconds: this.latest.recordSeconds,
+      powerOnSeconds: this.latest.powerOnSeconds,
+      protocol: inferProtocol(this.latest.dp, this.latest.dn),
     };
+  }
+
+  _parse(dataView) {
+    const packets = this._parsePackets(new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength));
+    if (!packets.length) return [];
+
+    let primaryMeasurement = null;
+    for (const { type, payload } of packets) {
+      const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+      if (type === 0x04) {
+        primaryMeasurement = {
+          voltage: dv.getUint32(0, true) / 10000,
+          current: dv.getUint32(4, true) / 10000,
+          power: dv.getUint32(8, true) / 10000,
+        };
+      } else if (type === 0x05) {
+        const sign = payload[4] > 0 ? 1 : -1;
+        this.latest.temperature = sign * (dv.getUint16(5, true) / 10);
+      } else if (type === 0x06) {
+        this.latest.dp = dv.getUint16(0, true) / 1000;
+        this.latest.dn = dv.getUint16(2, true) / 1000;
+      } else if (type === 0x07) {
+        if (!primaryMeasurement) {
+          const voltage = dv.getUint16(0, true) / 1000;
+          const current = dv.getUint16(2, true) / 1000;
+          primaryMeasurement = { voltage, current, power: voltage * current };
+        }
+      } else if (type === 0x08) {
+        this.latest.energyWh = dv.getUint32(1, true) / 100000;
+        this.latest.capacityAh = dv.getUint32(5, true) / 100000;
+        this.latest.recordSeconds = dv.getUint32(9, true);
+        this.latest.powerOnSeconds = dv.getUint32(13, true);
+      }
+    }
+
+    if (!primaryMeasurement || primaryMeasurement.voltage < 0 || primaryMeasurement.voltage > 150) {
+      return [];
+    }
+
+    return [this._buildReading(
+      primaryMeasurement.voltage,
+      primaryMeasurement.current,
+      primaryMeasurement.power
+    )];
   }
 }
 
@@ -368,10 +494,10 @@ class UsbDriver {
 
   async connect(onReading) {
     if (!UsbDriver.available()) {
-      throw new Error('WebUSB wird von diesem Browser nicht unterstützt');
+      throw new Error('WebUSB is not supported in this browser');
     }
 
-    setStatus('Wähle FNB58 USB-Gerät …');
+    setStatus('Choose FNB58 USB device ...');
     this.device = await navigator.usb.requestDevice({
       filters: USB_PRODUCT_IDS.map((productId) => ({ vendorId: USB_VENDOR_ID, productId })),
     });
@@ -393,7 +519,7 @@ class UsbDriver {
         break;
       }
     }
-    if (!chosen) throw new Error('Keine USB-Endpoints gefunden');
+    if (!chosen) throw new Error('No USB endpoints found');
 
     this.interfaceNumber = chosen.interfaceNumber;
     this.epIn = chosen.epIn.endpointNumber;
@@ -402,7 +528,7 @@ class UsbDriver {
     await this.device.claimInterface(this.interfaceNumber);
     this.isFnb58 = this.device.productId === 0x5031;
 
-    setStatus(`USB verbunden: ${this.device.productName || 'FNIRSI'}`, 'ok');
+    setStatus(`USB connected: ${this.device.productName || 'FNIRSI'}`, 'ok');
     setConnected(true, 'USB');
 
     this.reading = true;
@@ -487,25 +613,25 @@ let activeDriver = null;
 
 async function connectBle() {
   if (activeDriver) return;
-  appendLog('--- Bluetooth-Verbindungsversuch ---');
+  appendLog('--- Bluetooth connection attempt ---');
   const driver = new BleDriver();
   try {
     await driver.connect(pushReading);
     activeDriver = driver;
   } catch (err) {
-    logError('Bluetooth-Verbindung fehlgeschlagen', err);
+    logError('Bluetooth connection failed', err);
   }
 }
 
 async function connectUsb() {
   if (activeDriver) return;
-  appendLog('--- USB-Verbindungsversuch ---');
+  appendLog('--- USB connection attempt ---');
   const driver = new UsbDriver();
   try {
     await driver.connect(pushReading);
     activeDriver = driver;
   } catch (err) {
-    logError('USB-Verbindung fehlgeschlagen', err);
+    logError('USB connection failed', err);
   }
 }
 
@@ -518,7 +644,7 @@ async function disconnect() {
   }
   activeDriver = null;
   firstTimestamp = null;
-  setStatus('Getrennt', 'info');
+  setStatus('Disconnected', 'info');
   setConnected(false);
 }
 
@@ -530,9 +656,9 @@ function checkSupport() {
   $('btn-usb').disabled = !usbOk;
 
   const notes = [];
-  if (!bleOk) notes.push('Web Bluetooth nicht verfügbar');
-  if (!usbOk) notes.push('WebUSB nicht verfügbar');
-  if (!window.isSecureContext) notes.push('Seite muss über HTTPS oder localhost geöffnet werden');
+  if (!bleOk) notes.push('Web Bluetooth unavailable');
+  if (!usbOk) notes.push('WebUSB unavailable');
+  if (!window.isSecureContext) notes.push('Page must be opened over HTTPS or localhost');
 
   if (notes.length) {
     $('support-note').textContent = notes.join(' · ');

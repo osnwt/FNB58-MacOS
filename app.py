@@ -25,7 +25,7 @@ CORS(app)
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
-    async_mode='eventlet',
+    async_mode=app.config.get('SOCKETIO_ASYNC_MODE', 'threading'),
     ping_timeout=60,  # Increase timeout before disconnecting inactive client
     ping_interval=25,  # Send ping every 25 seconds to keep connection alive
     logger=False,
@@ -88,11 +88,10 @@ def api_connect():
 
         print(f"📡 Connect request: mode={mode}, address={device_address}")
 
-        result = device_manager.connect(mode=mode, device_address=device_address)
-        device_manager.start_monitoring()
-
         # Register WebSocket callback
         device_manager.register_callback(broadcast_data)
+        result = device_manager.connect(mode=mode, device_address=device_address)
+        device_manager.start_monitoring()
 
         print(f"✓ Connected successfully via {result.get('connection_type')}")
         return jsonify({'success': True, **result})

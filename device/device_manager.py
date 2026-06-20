@@ -212,7 +212,8 @@ class DeviceManager:
     
     def register_callback(self, callback):
         """Register a callback for new data"""
-        self.data_callbacks.append(callback)
+        if callback not in self.data_callbacks:
+            self.data_callbacks.append(callback)
     
     def unregister_callback(self, callback):
         """Unregister a callback"""

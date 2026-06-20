@@ -11,8 +11,10 @@ let displayMode = 'all';
 let timebase = 500; // ms per division
 let recordingStartTime = null;
 let heartbeatInterval = null;
+let latestReadingPollInterval = null;
 let sampleRate = 100; // Default to 100Hz, will be updated based on connection type
 let connectionType = null;
+let lastReadingKey = null;
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', () => {
@@ -169,6 +171,7 @@ async function disconnectDevice() {
     try {
         await apiRequest('/api/disconnect', { method: 'POST' });
         updateConnectionUI(false);
+        stopLatestReadingPolling();
         showToastPro('Disconnected', 'info');
 
         // Clear charts
@@ -197,6 +200,7 @@ function updateConnectionUI(connected, type = '') {
             sampleRate = 10; // Bluetooth is 10Hz
         }
         console.log(`Sample rate set to ${sampleRate}Hz for ${type} connection`);
+        startLatestReadingPolling();
 
         // Hide connect buttons, show disconnect
         document.querySelectorAll('[id^="btn-connect"]').forEach(btn => {
@@ -215,6 +219,8 @@ function updateConnectionUI(connected, type = '') {
         });
         const disconnectBtn = document.getElementById('btn-disconnect');
         if (disconnectBtn) disconnectBtn.classList.add('hidden');
+        stopLatestReadingPolling();
+        lastReadingKey = null;
     }
 }
 
@@ -222,16 +228,26 @@ function updateConnectionUI(connected, type = '') {
 function handleNewReading(reading) {
     if (isFrozen) return;
 
+    const readingKey = getReadingKey(reading);
+    if (readingKey && readingKey === lastReadingKey) {
+        return;
+    }
+    lastReadingKey = readingKey;
+
     // Update header metric values with more precision
     updateMetricValue('voltage-value-header', reading.voltage, 3);
     updateMetricValue('current-value-header', reading.current, 3);
     updateMetricValue('power-value-header', reading.power, 3);
 
     // Update energy and capacity in header
-    if (reading.energy !== undefined) {
+    if (reading.energy_wh !== undefined) {
+        updateMetricValue('energy-value-header', reading.energy_wh, 4);
+    } else if (reading.energy !== undefined) {
         updateMetricValue('energy-value-header', reading.energy, 4);
     }
-    if (reading.capacity !== undefined) {
+    if (reading.capacity_ah !== undefined) {
+        updateMetricValue('capacity-value-header', reading.capacity_ah * 1000, 2);
+    } else if (reading.capacity !== undefined) {
         updateMetricValue('capacity-value-header', reading.capacity, 3);
     }
 
@@ -280,6 +296,43 @@ function handleNewReading(reading) {
 
     // Calculate energy and capacity from stats
     updateEnergyCapacity();
+}
+
+function getReadingKey(reading) {
+    if (!reading) return null;
+    return [
+        reading.timestamp ?? '',
+        reading.voltage ?? '',
+        reading.current ?? '',
+        reading.power ?? '',
+        reading.sample ?? '',
+    ].join('|');
+}
+
+async function pollLatestReading() {
+    if (!connectionType) return;
+
+    try {
+        const reading = await apiRequest('/api/reading/latest');
+        handleNewReading(reading);
+    } catch (error) {
+        if (!String(error.message || '').includes('No data available')) {
+            console.error('Latest reading poll failed:', error);
+        }
+    }
+}
+
+function startLatestReadingPolling() {
+    stopLatestReadingPolling();
+    pollLatestReading();
+    latestReadingPollInterval = setInterval(pollLatestReading, 1000);
+}
+
+function stopLatestReadingPolling() {
+    if (latestReadingPollInterval) {
+        clearInterval(latestReadingPollInterval);
+        latestReadingPollInterval = null;
+    }
 }
 
 // Update metric value with formatting
