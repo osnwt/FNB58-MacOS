@@ -44,6 +44,26 @@ class BluetoothReaderParsingTests(unittest.TestCase):
         self.assertEqual(reading['record_seconds'], 789)
         self.assertEqual(reading['power_on_seconds'], 4567)
 
+    def test_prefers_precise_type_04_measurement_when_present(self):
+        reader = BluetoothReader()
+        frame = bytes.fromhex(
+            'aa0606e30ce30c050069'
+            'aa07042d4fd9070a'
+            'aa040ccb170300824e00006937060024'
+            'aa0507f389010001780144'
+        )
+
+        readings = reader._parse_data(frame)
+        self.assertEqual(len(readings), 1)
+
+        reading = readings[0]
+        self.assertEqual(reading['voltage'], 20.2699)
+        self.assertEqual(reading['current'], 2.0098)
+        self.assertEqual(reading['power'], 40.7401)
+        self.assertEqual(reading['dp'], 3.299)
+        self.assertEqual(reading['dn'], 3.299)
+        self.assertEqual(reading['temperature'], 37.6)
+
     def test_parses_legacy_fixed_offset_packet(self):
         reader = BluetoothReader()
         payload = bytearray(40)

@@ -288,8 +288,9 @@ class BluetoothReader:
 
         return packets
 
-    def _build_reading(self, voltage, current):
-        power = voltage * current
+    def _build_reading(self, voltage, current, power=None):
+        if power is None:
+            power = voltage * current
         return {
             'timestamp': datetime.now().isoformat(),
             'voltage': round(voltage, 5),
@@ -312,7 +313,7 @@ class BluetoothReader:
         if not packets:
             return [], had_framed_context
 
-        bus_packets = []
+        primary_measurement = None
 
         for packet_type, payload in packets:
             if packet_type == 0x03:
@@ -324,6 +325,13 @@ class BluetoothReader:
                     'group_max': payload[12],
                     'group_current': payload[13],
                 })
+            elif packet_type == 0x04:
+                voltage_raw, current_raw, power_raw = struct.unpack_from('<III', payload, 0)
+                primary_measurement = {
+                    'voltage': voltage_raw / 10000.0,
+                    'current': current_raw / 10000.0,
+                    'power': power_raw / 10000.0,
+                }
             elif packet_type == 0x05:
                 sign = 1 if payload[4] > 0 else -1
                 self._latest_measurement['temperature'] = (
@@ -334,7 +342,12 @@ class BluetoothReader:
                 self._latest_measurement['dp'] = dp / 1000.0
                 self._latest_measurement['dn'] = dn / 1000.0
             elif packet_type == 0x07:
-                bus_packets.append(struct.unpack_from('<HH', payload, 0))
+                voltage_raw, current_raw = struct.unpack_from('<HH', payload, 0)
+                primary_measurement = primary_measurement or {
+                    'voltage': voltage_raw / 1000.0,
+                    'current': current_raw / 1000.0,
+                    'power': (voltage_raw / 1000.0) * (current_raw / 1000.0),
+                }
             elif packet_type == 0x08:
                 self._latest_measurement['energy_wh'] = struct.unpack_from('<L', payload, 1)[0] / 100000.0
                 self._latest_measurement['capacity_ah'] = struct.unpack_from('<L', payload, 5)[0] / 100000.0
@@ -342,12 +355,13 @@ class BluetoothReader:
                 self._latest_measurement['power_on_seconds'] = struct.unpack_from('<L', payload, 13)[0]
 
         readings = []
-        for voltage_raw, current_raw in bus_packets:
-            voltage = voltage_raw / 1000.0
-            current = current_raw / 1000.0
+        if primary_measurement:
+            voltage = primary_measurement['voltage']
+            current = primary_measurement['current']
+            power = primary_measurement['power']
 
             if 0.0 <= voltage <= 150.0:
-                readings.append(self._build_reading(voltage, current))
+                readings.append(self._build_reading(voltage, current, power))
 
         return readings, True
 
